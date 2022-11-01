@@ -1,0 +1,63 @@
+pipeline {
+    environment { // Environment variables defined for all steps
+        DOCKER_IMAGE = "registry.demo.local:5000/juice-shop"
+        TOOLS_IMAGE = "tools-image"
+        JENKINS_UID = 1001 // User ID under which Jenkins runs
+        JENKINS_GID = 900 // Group ID under which Jenkins runs
+        SONAR_KEY = "juice-shop"
+    }
+
+    agent any
+
+    stages {
+        stage ("SCM") {
+            steps {
+                git 'https://github.com/vinay1074/devsecops.git'
+            }
+            }
+        stage("lint") {
+            agent {
+                docker {
+                    image "docker.io/hadolint/hadolint:v1.18.0"
+                    reuseNode true
+                }
+            }
+            steps {
+                sh label: "Lint Dockerfile", script: "hadolint Dockerfile > hadolint-results.txt"
+            }
+        }
+        stage("detect new secrets") {
+            agent {
+                docker {
+                    image "${TOOLS_IMAGE}"
+                    // Make sure that username can be mapped correctly
+                    args "--volume ${WORKSPACE}:/src:ro"
+                    reuseNode true
+                }
+            }
+            steps {
+                // Determine commit of previous successful build when this is master
+                script {
+                    def result = sh label: "detect-secrets",
+                        script: """\
+                            trufflehog /src
+                        """,
+                        returnStatus: true
+                    // Exit code 1 is generated when secrets are detected or no baseline is present
+                    // Exit code 3 is generated only when .secrets.baseline.json is updated,
+                    // eg. when the line numbers don't match anymore
+                    if (result == 1) {
+                        // There are (unaudited) secrets detected: fail stage
+                        unstable(message: "secrets have been found")
+                    }
+                }
+            }
+        }
+        
+}
+post {
+        always {
+        archiveArtifacts artifacts: "*-results.txt"
+    }
+}
+}
